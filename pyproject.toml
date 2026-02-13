@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "forge-arena"
+version = "0.1.0"
+description = "Multi-model adversarial code synthesis arena"
+readme = {text = "FORGE: Where AI models compete, review, and evolve code through adversarial pressure.", content-type = "text/plain"}
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "aiosqlite>=0.20.0",
+    "httpx>=0.28.0",
+    "sse-starlette>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "httpx>=0.28.0"]
+
+[project.scripts]
+forge = "forge.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/forge"]
