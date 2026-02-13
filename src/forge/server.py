@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
@@ -24,8 +26,6 @@ def create_app(
     db_path: str = "forge.db",
     provider_name: str = "auto",
 ) -> FastAPI:
-    app = FastAPI(title="FORGE Arena", version="0.1.0")
-
     # ── State ───────────────────────────────────────────────
     state: dict[str, Any] = {
         "db": ForgeDB(db_path),
@@ -34,8 +34,9 @@ def create_app(
         "active_streams": {},  # challenge_id -> list[asyncio.Queue]
     }
 
-    @app.on_event("startup")
-    async def startup() -> None:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Startup
         await state["db"].init()
         state["providers"] = await detect_providers()
         if provider_name == "auto":
@@ -45,6 +46,20 @@ def create_app(
         pnames = [p.name for p in state["providers"]]
         print(f"  FORGE providers detected: {pnames}")
         print(f"  Active provider: {state['provider'].name}")
+        yield
+        # Shutdown
+        await state["db"].close()
+
+    app = FastAPI(title="FORGE Arena", version="0.1.0", lifespan=lifespan)
+
+    # Add CORS middleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     def db() -> ForgeDB:
         return state["db"]
@@ -82,6 +97,10 @@ def create_app(
 
         if not description.strip():
             raise HTTPException(400, "Description is required")
+        if len(description) > 10000:
+            raise HTTPException(400, "Description too long (max 10000 characters)")
+        if len(test_code) > 50000:
+            raise HTTPException(400, "Test code too long (max 50000 characters)")
 
         challenge = Challenge(
             id=_id(),
@@ -103,8 +122,13 @@ def create_app(
             # Signal end
             for q in get_queues(challenge.id):
                 await q.put(None)
+            # Cleanup stream queues
+            state["active_streams"].pop(challenge.id, None)
 
-        asyncio.create_task(run_forge())
+        task = asyncio.create_task(run_forge())
+        task.add_done_callback(
+            lambda t: t.exception() if not t.cancelled() and t.exception() else None
+        )
 
         return JSONResponse(
             {"challenge": challenge.to_dict()},

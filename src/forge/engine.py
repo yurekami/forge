@@ -13,6 +13,7 @@ import tempfile
 import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from typing import Any
 
 from .db import ForgeDB
 from .models import (
@@ -329,7 +330,20 @@ class ForgeEngine:
 
     @staticmethod
     def _run_sandboxed(code: str) -> tuple[bool, str, str]:
-        """Run code in a subprocess with timeout. Returns (passed, stdout, stderr)."""
+        """Run code in a subprocess with timeout and safety restrictions."""
+        # Block dangerous imports
+        dangerous_patterns = [
+            "import os", "from os", "import subprocess", "from subprocess",
+            "import shutil", "from shutil", "import socket", "from socket",
+            "import ctypes", "from ctypes", "import sys", "from sys",
+            "__import__", "exec(", "eval(", "compile(",
+            "open(", "import pathlib", "from pathlib",
+        ]
+        code_lower = code.lower()
+        for pattern in dangerous_patterns:
+            if pattern.lower() in code_lower:
+                return False, "", f"Blocked: dangerous pattern '{pattern}' detected"
+
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".py", delete=False,
         ) as f:
@@ -338,12 +352,30 @@ class ForgeEngine:
             tmp_path = f.name
 
         try:
+            kwargs: dict[str, Any] = {
+                "capture_output": True,
+                "text": True,
+                "timeout": 30,
+                "cwd": tempfile.gettempdir(),
+            }
+
+            # Add resource limits on Unix
+            if sys.platform != "win32":
+                import resource
+
+                def _limit_resources() -> None:
+                    # 256 MB memory limit
+                    resource.setrlimit(
+                        resource.RLIMIT_AS, (256 * 1024 * 1024, 256 * 1024 * 1024),
+                    )
+                    # 10 second CPU time limit
+                    resource.setrlimit(resource.RLIMIT_CPU, (10, 10))
+
+                kwargs["preexec_fn"] = _limit_resources
+
             result = subprocess.run(
-                [sys.executable, tmp_path],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                cwd=tempfile.gettempdir(),
+                [sys.executable, "-I", tmp_path],  # -I for isolated mode
+                **kwargs,
             )
             passed = result.returncode == 0
             return passed, result.stdout[:5000], result.stderr[:5000]
